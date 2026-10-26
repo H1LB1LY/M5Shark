@@ -295,6 +295,7 @@ void SharkRadar::runSharkSense() {
   menu_function_obj.setSharkHudActivity(SHARK_HUD_WIFI_ACTIVITY, false);
 }
 
+
 namespace {
   // Shared intro chrome: progress bar + a cycling status caption.
   void introChrome(TFT_eSPI& tft, int16_t w, float prog, const char* const* status) {
@@ -664,13 +665,12 @@ void SharkRadar::playGpsIntro() {
 }
 
 #ifdef HAS_GPS
-
 void SharkRadar::runGps() {
   TFT_eSPI& tft = display_obj.tft;
   const int16_t w = tft.width();
+
   tft.fillScreen(TFT_BLACK);
-  menu_function_obj.setSharkHudActivity(SHARK_HUD_GPS_ACTIVITY, true);
-  header("// GPS RADAR");
+  header("// GPS SKY VIEW");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(WD_DIM, TFT_BLACK);
   tft.drawString("TOUCH TO EXIT", w / 2, 306, 1);
@@ -678,165 +678,277 @@ void SharkRadar::runGps() {
 
   float sweep = 0.0f;
   while (true) {
-    if (exitTouched()) break;
-    gps_obj.pump();
+    gps_obj.main();
+    if (exitTouched())
+      break;
+
+    const bool present = gps_obj.getGpsModuleStatus();
+    const bool fix = present && gps_obj.getFixStatus();
+    const int sats = present ? gps_obj.getNumSats() : 0;
+
     tft.fillRect(RCX - RR - 2, RCY - RR - 2, 2 * RR + 4, 2 * RR + 4, TFT_BLACK);
     frame(RCX, RCY, RR, sweep, "GPS");
-    // Draw satellites
-    int sats = gps_obj.getNumSats();
-    for (int i = 0; i < sats; i++) {
-      float el = gps_obj.getSatElevation(i);
-      float az = gps_obj.getSatAzimuth(i);
-      float r = (90.0f - el) / 90.0f * RR;
-      float a = az * PI / 180.0f;
-      int16_t bx = RCX + (int16_t)(sinf(a) * r);
-      int16_t by = RCY - (int16_t)(cosf(a) * r);
-      tft.fillCircle(bx, by, 2, WD_CYAN);
+
+    // Compass letters.
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(WD_GREY, TFT_BLACK);
+    tft.drawString("N", RCX, RCY - RR - 6, 1);
+    tft.drawString("S", RCX, RCY + RR + 6, 1);
+    tft.drawString("W", RCX - RR - 6, RCY, 1);
+    tft.drawString("E", RCX + RR + 6, RCY, 1);
+
+    // Satellite blips spaced around the middle ring; lit if we have a fix.
+    const int shown = sats > 12 ? 12 : sats;
+    for (int i = 0; i < shown; i++) {
+      float ang = (i / 12.0f) * 2.0f * PI + 0.3f;
+      float ring = (i % 2 == 0) ? 0.62f : 0.86f;
+      int16_t bx = RCX + (int16_t)(cosf(ang) * RR * ring);
+      int16_t by = RCY + (int16_t)(sinf(ang) * RR * ring);
+      tft.fillCircle(bx, by, 3, fix ? WD_CYAN : WD_AMBER);
     }
+    // Centre fix marker.
+    tft.fillCircle(RCX, RCY, 3, fix ? WD_CYAN : WD_DIM);
+
+    // Telemetry.
     tft.setTextDatum(TL_DATUM);
-    tft.fillRect(4, 250, w - 8, 30, TFT_BLACK);
-    tft.setTextColor(WD_CYAN, TFT_BLACK);
-    tft.drawString(String("Sats: ") + sats, 8, 252, 2);
-    sweep += 0.22f;
-    if (sweep > 2.0f * PI) sweep -= 2.0f * PI;
-    delay(40);
+    tft.fillRect(4, 248, w - 8, 34, TFT_BLACK);
+    tft.setTextColor(fix ? WD_CYAN : WD_AMBER, TFT_BLACK);
+    tft.drawString(present ? (fix ? "FIX" : "NO FIX") : "NO MODULE", 8, 250, 2);
+    tft.setTextColor(WD_BONE, TFT_BLACK);
+    tft.drawString(String("SATS ") + sats, 90, 250, 2);
+    if (fix) {
+      String pos = gps_obj.getLat() + "," + gps_obj.getLon();
+      while (pos.length() > 3 && tft.textWidth(pos, 1) > w - 16)
+        pos.remove(pos.length() - 1);
+      tft.setTextColor(WD_GREY, TFT_BLACK);
+      tft.drawString(pos, 8, 270, 1);
+    }
+
+    sweep += 0.18f;
+    if (sweep > 2.0f * PI)
+      sweep -= 2.0f * PI;
+    menu_function_obj.updateStatusBar();
+    delay(60);
   }
-  menu_function_obj.setSharkHudActivity(SHARK_HUD_GPS_ACTIVITY, false);
 }
 
+// Speedometer: a large ground-speed readout with heading and altitude.
 void SharkRadar::runSpeed() {
   TFT_eSPI& tft = display_obj.tft;
   const int16_t w = tft.width();
   tft.fillScreen(TFT_BLACK);
-  header("// SPEED");
+  header("// SPEEDOMETER");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(WD_DIM, TFT_BLACK);
   tft.drawString("TOUCH TO EXIT", w / 2, 306, 1);
-  tft.setTextDatum(TL_DATUM);
 
   while (true) {
+    gps_obj.main();
     if (exitTouched()) break;
-    gps_obj.pump();
-    bool fix = gps_obj.hasFix();
-    float spd = gps_obj.getSpeed();
-    float alt = gps_obj.getAltitude();
-    float hdg = gps_obj.getHeading();
-    tft.fillRect(0, 40, w, 220, TFT_BLACK);
+
+    const bool present = gps_obj.getGpsModuleStatus();
+    const bool fix = present && gps_obj.getFixStatus();
+    const float spd = fix ? gps_obj.getSpeedKmph() : 0.0f;
+    const float crs = gps_obj.getCourseDeg();
+    const float alt = gps_obj.getAlt();
+    const int sats = present ? gps_obj.getNumSats() : 0;
+
+    // Big speed number.
+    tft.fillRect(0, 40, w, 130, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
-    if (!fix) {
-      tft.setTextColor(WD_AMBER, TFT_BLACK);
-      tft.drawString("NO FIX", w / 2, 140, 4);
-    } else {
-      tft.setTextColor(WD_CYAN, TFT_BLACK);
-      tft.drawString(String(spd, 1) + " m/s", w / 2, 120, 4);
-      tft.setTextColor(WD_BONE, TFT_BLACK);
-      tft.drawString(String((int)hdg) + " deg  " + String(alt, 0) + " m", w / 2, 170, 2);
-    }
+    tft.setTextColor(fix ? WD_CYAN : WD_DIM, TFT_BLACK);
+    tft.drawString(String(spd, 1), w / 2, 110, 7);
+    tft.setTextColor(WD_GREY, TFT_BLACK);
+    tft.drawString("km/h", w / 2, 158, 4);
+
+    // Panel: heading, altitude, sats.
+    wdPanel(tft, 10, 190, w - 20, 96, WD_SURFACE, WD_EDGE, WD_CYAN);
     tft.setTextDatum(TL_DATUM);
-    delay(100);
+    tft.setTextColor(WD_DIM, WD_SURFACE);
+    tft.drawString("HEADING", 22, 202, 1);
+    tft.drawString("ALTITUDE", 22, 232, 1);
+    tft.drawString("SATS", 22, 262, 1);
+    tft.fillRect(120, 198, w - 130, 82, WD_SURFACE);
+    tft.setTextColor(fix ? WD_BONE : WD_DIM, WD_SURFACE);
+    tft.drawString(fix ? (String((int)crs) + " " + cardinal8(crs)) : "--", 120, 200, 2);
+    tft.drawString(fix ? (String(alt, 0) + " m") : "--", 120, 230, 2);
+    tft.setTextColor(sats > 0 ? WD_CYAN : WD_AMBER, WD_SURFACE);
+    tft.drawString(String(sats), 120, 260, 2);
+    tft.setTextDatum(TL_DATUM);
+    menu_function_obj.updateStatusBar();
+    delay(150);
   }
 }
 
+// Compass: a GPS course-over-ground rose. This hardware has no magnetometer,
+// so it cannot sense which way the device is pointing while it sits still.
+// The needle is real only while actually moving; when stopped or unfixed it is
+// hidden and the screen says why, instead of a stale needle that looks fake.
 void SharkRadar::runCompass() {
   TFT_eSPI& tft = display_obj.tft;
   const int16_t w = tft.width();
+  const int16_t cx = 120, cy = 150, r = 92;
+  const float MOVING_KMPH = 1.0f;  // GPS course is only meaningful above walking pace
+
   tft.fillScreen(TFT_BLACK);
   header("// COMPASS");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(WD_DIM, TFT_BLACK);
+  tft.drawString("GPS COURSE OVER GROUND", w / 2, 92, 1);
   tft.drawString("TOUCH TO EXIT", w / 2, 306, 1);
-  tft.setTextDatum(TL_DATUM);
+
+  // Draw the static rose once so the loop only repaints the live needle and the
+  // readout line. Repainting the whole rose each frame is what made it blink.
+  auto drawRose = [&]() {
+    tft.drawCircle(cx, cy, r, WD_EDGE);
+    tft.drawCircle(cx, cy, r * 2 / 3, WD_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(WD_GREY, TFT_BLACK);
+    tft.drawString("N", cx, cy - r - 6, 2);
+    tft.drawString("S", cx, cy + r + 6, 2);
+    tft.drawString("W", cx - r - 8, cy, 2);
+    tft.drawString("E", cx + r + 8, cy, 2);
+  };
+  drawRose();
+
+  // Previous needle endpoints, so each frame erases only what it drew.
+  int16_t p_tipx = cx, p_tipy = cy, p_tailx = cx, p_taily = cy;
+  bool had_needle = false;
+  String last_read = "";
 
   while (true) {
+    gps_obj.main();
     if (exitTouched()) break;
-    gps_obj.pump();
-    bool fix = gps_obj.hasFix();
-    float hdg = gps_obj.getHeading();
-    tft.fillRect(0, 40, w, 220, TFT_BLACK);
-    const int16_t cx = 120, cy = 140, r = 80;
-    tft.drawCircle(cx, cy, r, WD_EDGE);
-    if (fix) {
-      float a = hdg * PI / 180.0f;
-      int16_t tipx = cx + (int16_t)(sinf(a) * (r - 10));
-      int16_t tipy = cy - (int16_t)(cosf(a) * (r - 10));
+
+    const bool present = gps_obj.getGpsModuleStatus();
+    const bool fix = present && gps_obj.getFixStatus();
+    const float spd = fix ? gps_obj.getSpeedKmph() : 0.0f;
+    const bool moving = fix && spd >= MOVING_KMPH;
+    const float crs = gps_obj.getCourseDeg();
+
+    // Erase the previous needle (thin lines only), then restore the rings it
+    // crossed and the hub. No full-area clear, so there is no blink.
+    if (had_needle) {
+      tft.drawLine(cx, cy, p_tipx, p_tipy, TFT_BLACK);
+      tft.drawLine(cx, cy, p_tailx, p_taily, TFT_BLACK);
+      tft.fillCircle(p_tipx, p_tipy, 4, TFT_BLACK);
+      drawRose();
+    }
+
+    if (moving) {
+      // Needle: north-referenced (0 deg = up), rotating clockwise with course.
+      const float a = crs * PI / 180.0f;
+      const int16_t tipx = cx + (int16_t)(sinf(a) * (r - 10));
+      const int16_t tipy = cy - (int16_t)(cosf(a) * (r - 10));
+      const int16_t tailx = cx - (int16_t)(sinf(a) * (r - 30));
+      const int16_t taily = cy + (int16_t)(cosf(a) * (r - 30));
+      tft.drawLine(cx, cy, tailx, taily, WD_AMBER);
       tft.drawLine(cx, cy, tipx, tipy, WD_CYAN);
       tft.fillCircle(tipx, tipy, 4, WD_CYAN);
+      p_tipx = tipx; p_tipy = tipy; p_tailx = tailx; p_taily = taily;
+      had_needle = true;
+    } else {
+      had_needle = false;
     }
-    tft.fillCircle(cx, cy, 3, WD_BONE);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(WD_CYAN, TFT_BLACK);
-    tft.drawString(fix ? (String((int)hdg) + " deg") : "NO FIX", w / 2, 240, 2);
-    tft.setTextDatum(TL_DATUM);
-    delay(100);
+    tft.fillCircle(cx, cy, 4, WD_BONE);  // hub always marks the rose center
+
+    // Honest readout: real course only while moving, otherwise the reason.
+    const String readout = moving
+        ? (String((int)crs) + " deg  " + cardinal8(crs))
+        : (!fix ? String("NO FIX")
+                : String("STAND STILL"));
+    const String hint = moving
+        ? String("")
+        : (!fix ? String("WAITING FOR SATELLITE FIX")
+                : String("MOVE > 1 km/h TO READ COURSE"));
+    if (readout != last_read) {
+      tft.setTextDatum(MC_DATUM);
+      tft.fillRect(0, 256, w, 46, TFT_BLACK);
+      tft.setTextColor(moving ? WD_CYAN : WD_AMBER, TFT_BLACK);
+      tft.drawString(readout, w / 2, 270, 4);
+      if (hint.length()) {
+        tft.setTextColor(WD_DIM, TFT_BLACK);
+        tft.drawString(hint, w / 2, 292, 1);
+      }
+      tft.setTextDatum(TL_DATUM);
+      last_read = readout;
+    }
+    menu_function_obj.updateStatusBar();
+    delay(150);
   }
 }
 
+// GPS clock: satellite-disciplined UTC date/time and fix quality.
 void SharkRadar::runClock() {
   TFT_eSPI& tft = display_obj.tft;
   const int16_t w = tft.width();
   tft.fillScreen(TFT_BLACK);
-  header("// CLOCK");
+  header("// GPS CLOCK");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(WD_DIM, TFT_BLACK);
   tft.drawString("TOUCH TO EXIT", w / 2, 306, 1);
-  tft.setTextDatum(TL_DATUM);
 
   while (true) {
+    gps_obj.main();
     if (exitTouched()) break;
-    gps_obj.pump();
-    bool fix = gps_obj.hasFix();
-    tft.fillRect(0, 40, w, 220, TFT_BLACK);
+
+    const bool present = gps_obj.getGpsModuleStatus();
+    const bool fix = present && gps_obj.getFixStatus();
+    const int sats = present ? gps_obj.getNumSats() : 0;
+    String dt = gps_obj.getDatetime();        // "YYYY-MM-DD HH:MM:SS"
+    String date = dt, time = "";
+    int sp = dt.indexOf(' ');
+    if (sp > 0) { date = dt.substring(0, sp); time = dt.substring(sp + 1); }
+
+    tft.fillRect(0, 90, w, 150, TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
-    if (!fix) {
-      tft.setTextColor(WD_AMBER, TFT_BLACK);
-      tft.drawString("NO FIX", w / 2, 140, 4);
-    } else {
-      tft.setTextColor(WD_CYAN, TFT_BLACK);
-      tft.drawString(gps_obj.getTimeString(), w / 2, 120, 4);
-      tft.setTextColor(WD_BONE, TFT_BLACK);
-      tft.drawString(gps_obj.getDateString(), w / 2, 170, 2);
-    }
+    tft.setTextColor(fix ? WD_CYAN : WD_DIM, TFT_BLACK);
+    tft.drawString(time.length() ? time : "--:--:--", w / 2, 130, 7);
+    tft.setTextColor(WD_BONE, TFT_BLACK);
+    tft.drawString(date.length() ? date : "----/--/--", w / 2, 180, 4);
+
+    wdPanel(tft, 10, 214, w - 20, 60, WD_SURFACE, WD_EDGE, WD_CYAN);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(fix ? WD_CYAN : WD_AMBER, WD_SURFACE);
+    tft.drawString(present ? (fix ? "FIX LOCKED" : "ACQUIRING") : "NO MODULE", 22, 244, 2);
+    tft.setTextColor(WD_BONE, WD_SURFACE);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString(String("SATS ") + sats, w - 22, 244, 2);
     tft.setTextDatum(TL_DATUM);
+    menu_function_obj.updateStatusBar();
     delay(200);
   }
 }
 
+// Waypoint: mark the current spot, then show range + bearing back to it. Touch
+// the bottom bar to (re)mark; touch anywhere above to exit.
 void SharkRadar::runWaypoint() {
   TFT_eSPI& tft = display_obj.tft;
   const int16_t w = tft.width();
   tft.fillScreen(TFT_BLACK);
   header("// WAYPOINT");
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(WD_DIM, TFT_BLACK);
-  tft.drawString("TOUCH ABOVE TO EXIT", w / 2, 306, 1);
-  tft.setTextDatum(TL_DATUM);
 
-  static bool home_set = false;
-  static double home_lat = 0, home_lon = 0;
+  bool home_set = false;
+  double home_lat = 0, home_lon = 0;
 
   while (true) {
+    gps_obj.main();
+
+    const bool present = gps_obj.getGpsModuleStatus();
+    const bool fix = present && gps_obj.getFixStatus();
+    const double clat = gps_obj.getLatInt() / 1000000.0;
+    const double clon = gps_obj.getLonInt() / 1000000.0;
+
+    // Zoned touch: bottom bar marks, anywhere above exits.
     uint16_t tx, ty;
     if (display_obj.updateTouch(&tx, &ty)) {
-      if (ty < 250) {
-        while (display_obj.updateTouch(&tx, &ty)) delay(10);
-        break;
-      }
-      // Mark button area
-      if (ty >= 262) {
-        gps_obj.pump();
-        if (gps_obj.hasFix()) {
-          home_lat = gps_obj.getLat();
-          home_lon = gps_obj.getLon();
-          home_set = true;
-        }
-        while (display_obj.updateTouch(&tx, &ty)) delay(10);
-      }
+      const bool mark = ty > 262;
+      while (display_obj.updateTouch(&tx, &ty)) delay(10);
+      if (mark) { if (fix) { home_lat = clat; home_lon = clon; home_set = true; } }
+      else break;
     }
-    gps_obj.pump();
-    bool fix = gps_obj.hasFix();
-    double clat = gps_obj.getLat();
-    double clon = gps_obj.getLon();
 
+    // Range + bearing from current position back to the marked point.
     double dist = 0, brg = 0;
     if (home_set && fix) {
       const double R = 6371000.0;
@@ -852,6 +964,8 @@ void SharkRadar::runWaypoint() {
     }
 
     tft.fillRect(0, 40, w, 220, TFT_BLACK);
+
+    // Bearing arrow.
     const int16_t cx = 120, cy = 120, r = 66;
     tft.drawCircle(cx, cy, r, WD_EDGE);
     if (home_set && fix) {
@@ -863,6 +977,7 @@ void SharkRadar::runWaypoint() {
     }
     tft.fillCircle(cx, cy, 3, WD_BONE);
 
+    // Readout.
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(WD_GREY, TFT_BLACK);
     if (!home_set) {
@@ -881,6 +996,7 @@ void SharkRadar::runWaypoint() {
       tft.drawString(String((int)brg) + " deg  " + cardinal8(brg), w / 2, 232, 2);
     }
 
+    // Mark button.
     tft.fillRect(0, 262, w, 58, home_set ? WD_SURFACE : WD_PANEL);
     tft.drawFastHLine(0, 262, w, WD_CYAN);
     tft.setTextColor(fix ? WD_CYAN : WD_DIM, home_set ? WD_SURFACE : WD_PANEL);
@@ -892,7 +1008,6 @@ void SharkRadar::runWaypoint() {
     delay(160);
   }
 }
-
 #endif
 
 #endif

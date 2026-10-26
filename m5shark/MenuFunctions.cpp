@@ -10206,6 +10206,10 @@ void MenuFunctions::RunSetup()
     shark_radar_obj.runWifi();
     this->changeMenu(&sharkDefenseMenu, true);
   });
+  this->addNodes(&sharkDefenseMenu, "Shark Sense", TFTGREEN, SCANNERS, [this]() {
+    shark_radar_obj.runSharkSense();
+    this->changeMenu(&sharkDefenseMenu, true);
+  });
 
   // Build WiFi Menu
   wifiMenu.parentMenu = &mainMenu; // Main Menu is second menu parent
