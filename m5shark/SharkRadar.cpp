@@ -3,6 +3,7 @@
 #if defined(HAS_SCREEN) && defined(MARAUDER_V8)
 
 #include <WiFi.h>
+#include <NimBLEDevice.h>
 #include <math.h>
 #include "SharkTheme.h"
 #include "Display.h"
@@ -191,7 +192,12 @@ void SharkRadar::runWifi() {
 
   WiFi.scanDelete();
   WiFi.mode(WIFI_OFF);
-  menu_function_obj.setSharkHudActivity(SHARK_HUD_WIFI_ACTIVITY, false);
+  if (ble_ok && ble_scan) {
+    ble_scan->stop();
+    ble_scan->clearResults();
+    wifi_scan_obj.bleSoftStop();
+  }
+  menu_function_obj.setSharkHudActivity(SHARK_HUD_WIFI_ACTIVITY | SHARK_HUD_BLE_ACTIVITY, false);
 }
 
 // Shark Sense: polar map with estimated relative distance (meters).
@@ -209,16 +215,30 @@ void SharkRadar::runSharkSense() {
   const float MAX_M = 30.0f;   // outer ring = 30 m
 
   tft.fillScreen(TFT_BLACK);
-  menu_function_obj.setSharkHudActivity(SHARK_HUD_WIFI_ACTIVITY, true);
+  menu_function_obj.setSharkHudActivity(SHARK_HUD_WIFI_ACTIVITY | SHARK_HUD_BLE_ACTIVITY, true);
   header("// SHARK SENSE");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(WD_DIM, TFT_BLACK);
   tft.drawString("TOUCH TO EXIT", w / 2, 306, 1);
   tft.setTextDatum(TL_DATUM);
 
+  // Bring up BLE and start a continuous non-blocking scan.
+  bool ble_ok = wifi_scan_obj.ensureBLE("");
+  NimBLEScan* ble_scan = nullptr;
+  if (ble_ok) {
+    ble_scan = NimBLEDevice::getScan();
+    ble_scan->setActiveScan(true);
+    ble_scan->setInterval(50);
+    ble_scan->setWindow(30);
+    ble_scan->clearResults();
+    ble_scan->start(0, false, false);
+  }
+
   float sweep = 0.0f;
   uint32_t last_scan = 0;
+  uint32_t last_ble_restart = 0;
   int found = 0;
+  int ble_found = 0;
 
   while (true) {
     if (exitTouched())
@@ -231,6 +251,17 @@ void SharkRadar::runSharkSense() {
       tft.drawString("sensing...", 8, 252, 1);
       found = WiFi.scanNetworks(false, false);
       last_scan = millis();
+    }
+
+    // Refresh BLE results periodically (same pattern as SharkPrank::bleRadar).
+    if (ble_ok && ble_scan && (millis() - last_ble_restart > 4000 || last_ble_restart == 0)) {
+      last_ble_restart = millis();
+      ble_scan->stop();
+      ble_scan->clearResults();
+      ble_scan->start(0, false, false);
+    }
+    if (ble_ok && ble_scan) {
+      ble_found = ble_scan->getResults().getCount();
     }
 
     // Clear radar disc.
@@ -266,8 +297,38 @@ void SharkRadar::runSharkSense() {
       tft.fillCircle(bx, by, 3, col);
       if (rssi > strongest) {
         strongest = rssi;
-        strongest_name = WiFi.SSID(i);
+        strongest_name = String("W:") + WiFi.SSID(i);
         strongest_m = meters;
+      }
+    }
+
+    // Plot BLE devices (amber markers) if the stack is up.
+    if (ble_ok && ble_scan) {
+      NimBLEScanResults res = ble_scan->getResults();
+      for (int i = 0; i < res.getCount(); i++) {
+        const NimBLEAdvertisedDevice* dev = res.getDevice(i);
+        int rssi = dev->getRSSI();
+        const uint8_t* addr = dev->getAddress().getNative();
+        uint16_t h = keyHash(addr, 6);
+        float ang = (h / 65535.0f) * 2.0f * PI;
+
+        float meters = powf(10.0f, (PL_A - (float)rssi) / (10.0f * PL_N));
+        if (meters < 0.5f) meters = 0.5f;
+        if (meters > MAX_M) meters = MAX_M;
+        float norm = meters / MAX_M;
+        int16_t br = (int16_t)(norm * RR);
+        int16_t bx = RCX + (int16_t)(cosf(ang) * br);
+        int16_t by = RCY + (int16_t)(sinf(ang) * br);
+        uint16_t col = meters < 4.0f ? WD_AMBER : meters < 12.0f ? 0xFD20 : WD_DIM;
+        tft.fillCircle(bx, by, 2, col);
+        tft.drawCircle(bx, by, 3, col);  // hollow ring to distinguish from WiFi
+        if (rssi > strongest) {
+          strongest = rssi;
+          String nm = dev->getName().length() ? String(dev->getName().c_str())
+                                              : String(dev->getAddress().toString().c_str());
+          strongest_name = String("B:") + nm;
+          strongest_m = meters;
+        }
       }
     }
 
@@ -275,7 +336,7 @@ void SharkRadar::runSharkSense() {
     tft.setTextDatum(TL_DATUM);
     tft.fillRect(4, 250, w - 8, 30, TFT_BLACK);
     tft.setTextColor(WD_CYAN, TFT_BLACK);
-    tft.drawString(String("APs: ") + found, 8, 252, 2);
+    tft.drawString(String("W:") + found + " B:" + ble_found, 8, 252, 2);
     if (strongest_name.length()) {
       tft.setTextColor(WD_BONE, TFT_BLACK);
       String s = String((int)strongest_m) + "m " + strongest_name;
