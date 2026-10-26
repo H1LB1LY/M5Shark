@@ -15,6 +15,11 @@ class SharkRadar {
     // and a stable angle per BSSID, refreshed by a periodic scan.
     void runWifi();
 
+    // Shark Sense: relative-distance polar map. Same sweep + BSSID angle as
+    // runWifi, but radius is estimated meters (log-distance path-loss) instead
+    // of raw RSSI, with labeled range rings and a strongest-device readout.
+    void runSharkSense();
+
     // Short themed animated intro pages shown when entering the Wi-Fi,
     // Bluetooth and GPS sections. Auto-advance; a touch skips them.
     void playWifiIntro();
