@@ -1,48 +1,14 @@
-# Shark Sense
+# Shark Sense — Implementation Notes
 
-Relative-distance polar radar for the M5Shark v8 (SHARK firmware).
+## Features (2026-10-26)
 
-## What it does
+- **Separate modes**: Menu entries "WiFi Sense" and "BLE Sense" call `runSharkSense(false)` and `runSharkSense(true)`.
+- **Channel colors**: 2.4 GHz (ch 1–14) uses cool palette; 5/6 GHz uses warm palette. BLE blips are amber.
+- **Per-blip labels**: Shortened SSID/name + distance in meters drawn next to each marker.
+- **Scale / zoom**: Outer ring represents `scaleMeters` (default 20 m). Devices beyond the scale are clamped to the outer ring. (Touch zones for live zoom are stubbed; scale value is currently fixed at entry — ready for button or touch mapping.)
+- **Calibration screen**: Shown on entry. Instructs user to hold level and rotate. Notes that true bearing requires an IMU.
+- **Bearing**: `getHeading()` returns 0.0f (north-up relative to device). Structured so an external IMU (QMC5883L / LSM6DS3 on available I2C) can replace the stub without changing the plot path.
 
-- Scans nearby APs (same data as the existing WiFi Radar).
-- Estimates relative distance in meters using a log-distance path-loss model.
-- Plots each AP on a sweeping polar map:
-  - Radius = estimated meters (outer ring ≈ 30 m).
-  - Angle = stable hash of the BSSID (not true bearing).
-- Labeled range rings (2 m / 8 m / 20 m).
-- Strongest-device readout (distance + SSID).
-- Touch to exit.
+## Hardware note
 
-## Status
-
-The method is implemented in `m5shark/SharkRadar.cpp` as `SharkRadar::runSharkSense()`.
-
-The menu entry is **not yet wired** because `MenuFunctions.cpp` is too large for a single API update. Add it manually (one line):
-
-In `m5shark/MenuFunctions.cpp`, right after the existing `"WiFi Radar"` node inside `sharkDefenseMenu`, insert:
-
-```cpp
-this->addNodes(&sharkDefenseMenu, "Shark Sense", TFTGREEN, SCANNERS, [this]() {
-  shark_radar_obj.runSharkSense();
-  this->changeMenu(&sharkDefenseMenu, true);
-});
-```
-
-Then rebuild with `build-shark-v8.ps1` and flash.
-
-## Path-loss constants (tune later)
-
-```cpp
-const float PL_A = -40.0f;  // RSSI at 1 m
-const float PL_N = 2.7f;    // path-loss exponent
-const float MAX_M = 30.0f;  // outer ring
-```
-
-These are starting values. Real indoor/outdoor calibration will improve accuracy.
-
-## Next steps
-
-1. Wire the menu entry (snippet above).
-2. Build and flash.
-3. Walk-test against known APs and adjust PL_A / PL_N.
-4. Optional later: BLE devices, true bearing if heading data is available, QR export of the strongest MAC.
+M5Shark V8 has no onboard IMU (only GPS + IP5306). Real device-rotation bearing requires an external I2C magnetometer/IMU. Until that is attached, angles are stable per-BSSID hashes so the map remains consistent across scans but is not a true compass bearing.

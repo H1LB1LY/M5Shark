@@ -10206,8 +10206,12 @@ void MenuFunctions::RunSetup()
     shark_radar_obj.runWifi();
     this->changeMenu(&sharkDefenseMenu, true);
   });
-  this->addNodes(&sharkDefenseMenu, "Shark Sense", TFTGREEN, SCANNERS, [this]() {
-    shark_radar_obj.runSharkSense();
+  this->addNodes(&sharkDefenseMenu, "WiFi Sense", TFTGREEN, SCANNERS, [this]() {
+    shark_radar_obj.runSharkSense(false);
+    this->changeMenu(&sharkDefenseMenu, true);
+  });
+  this->addNodes(&sharkDefenseMenu, "BLE Sense", TFTGREEN, SCANNERS, [this]() {
+    shark_radar_obj.runSharkSense(true);
     this->changeMenu(&sharkDefenseMenu, true);
   });
 
